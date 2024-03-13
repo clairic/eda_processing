@@ -2,7 +2,6 @@ import pandas as pd
 from datetime import datetime,timedelta 
 import neurokit2 as nk
 import matplotlib.pyplot as plt
-import os
 
 #Load EDA data 
 eda_data = pd.read_csv('C:/Users/khale/OneDrive/Desktop/EDA.csv')
@@ -49,11 +48,11 @@ for recovery in info['SCR_Recovery']:
 eda_data_with_features.to_csv('Modified_EDA.csv', index=False)
 
 from firebase_admin import credentials, initialize_app, storage
-# Init firebase with your credentials
+# Init firebase
 cred = credentials.Certificate('usagestats-d296b-93f481d3896b.json')
 initialize_app(cred, {'storageBucket': 'usagestats-d296b.appspot.com'})
 
-# Put your local file path 
+# local file path of the file I want to upload
 fileName = "Modified_EDA.csv"
 bucket = storage.bucket()
 blob = bucket.blob(fileName)
