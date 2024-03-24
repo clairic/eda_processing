@@ -2,63 +2,162 @@ import pandas as pd
 from datetime import datetime,timedelta 
 import neurokit2 as nk
 import matplotlib.pyplot as plt
+from scipy.signal import butter, filtfilt, find_peaks
+import numpy as np  
+import os
 
 #Load EDA data 
-eda_data = pd.read_csv('C:/Users/khale/OneDrive/Desktop/EDA.csv')
+eda_data = pd.read_csv('EDA.csv')
 eda_signal = eda_data.iloc[:,0] #selecting the first column of the csv file
-sampling_rate = 1000
-signals, info = nk.eda_process(eda_signal, sampling_rate)
+sampling_rate = 4
 
-cleaned_signal = signals["EDA_Clean"]
-features = [info['SCR_Onsets'], info['SCR_Peaks'], info['SCR_Recovery']]
-plot = nk.events_plot(features, cleaned_signal, color=['red', 'blue', 'orange'])
+#segmenting with a 30-second non overlapping window
+window_length = 30 #in seconds
+window_length_samples = window_length * sampling_rate 
 
-# Defining the start time and generating timestamps
-start_time = datetime(2024,3,1,11,19,20) #the start time of the eda file I had recorded
+#list to store segments
+seg = []
+#list to store results
+filtered_segments = []
+phasic_components = []
+tonic_components = []
+scl_components = []
 
-#Generating timestamps
-time_stamps=[start_time + timedelta(seconds=i) for i in range(len(eda_data))]
-data = nk.eda_phasic(nk.standardize(eda_signal), sampling_rate)
-data["Raw EDA"] = eda_signal
-data.plot()
-plot = nk.eda_plot(signals)
-plt.show()
+#filtered signal - butterworth low pass filtering 
+def butter_lp_filter(data, cutoff, fs, order):
+    nyq_f = 0.5*fs #Nyquist Frequency
+    normal_cutoff = cutoff/nyq_f
+    b, a = butter(order, normal_cutoff, btype = 'low', analog=False)
+    y = filtfilt(b,a,data)
+    return y 
 
-eda_data_with_features = pd.DataFrame({
-    'Timestamp': time_stamps,
-    'Raw EDA': eda_signal,
-    'CLeaned EDA':signals['EDA_Clean'], 
-    'SCR Onsets': [0] * len(eda_signal),
-    'SCR Peaks': [0] * len(eda_signal),
-    'SCR Recovery': [0] * len(eda_signal) })
+#decomposing signal into tonic and phasic components
+def butter_hp_filter(data, cutoff, fs, order):
+    nyq_f=0.5*fs #Nyquist Frequency
+    normal_cutoff = cutoff/nyq_f
+    b, a = butter(order, normal_cutoff, btype='high', analog=False)
+    z = filtfilt(b, a, data)
+    return z
+
+#directory of the folders where the segments and the plots will be saved 
+parent_dir = "Segments"
+plot_dir = "EDA_plots"
+eda_chars_plots_dir = "EDA_chars_plots"
+path = os.path.join(parent_dir)
+os.makedirs(path, exist_ok=True)
+os.makedirs(plot_dir, exist_ok=True)
+os.makedirs(eda_chars_plots_dir, exist_ok=True)
+
+#Divide the signal into non-overlapping segments
+for start in range(0, len(eda_signal), window_length_samples):
+    end = start + window_length_samples
+    if end <= len(eda_signal):
+        segment = eda_signal[start:end]
+
+        if len(segment) == window_length_samples:
+            seg.append(segment)
 
 
-# Update SCR event columns based on indices in info dictionary
-for onset in info['SCR_Onsets']:
-    eda_data_with_features.at[onset, 'SCR Onsets'] = 1
+            #filtering the segments
+            #filter requirements for the low pass filter
+            order_lp = 4
+            fs = 4 #sample rate 
+            cutoff_lp = 1 #desired cutoff frequency of the filter in Hz
+            # Applying the low-pass filter
+            filtered_signal = butter_lp_filter(segment, cutoff_lp, fs, order_lp)
+            filtered_segments.append(filtered_signal)
 
-for peak in info['SCR_Peaks']:
-    eda_data_with_features.at[peak, 'SCR Peaks'] = 1
 
-for recovery in info['SCR_Recovery']:
-    eda_data_with_features.at[recovery, 'SCR Recovery'] = 1
+            #decomposing the signal
+            #filter requirements for the high pass filter
+            order_hp = 4
+            cutoff_hp = 0.05  # Desired cutoff frequency of the high-pass filter, Hz
+            #applying the high-pass filter and getting the phasic component
+            phasic_component = butter_hp_filter(filtered_signal, cutoff_hp, fs, order_hp)
+            phasic_components.append(phasic_component)
 
 
-#Save the new DataFrame to a new CSV file. 
-eda_data_with_features.to_csv('Modified_EDA.csv', index=False)
+            #getting the tonic component of the signal
+            tonic_component = filtered_signal - phasic_component
+            tonic_components.append(tonic_component)
 
-from firebase_admin import credentials, initialize_app, storage
-# Init firebase
-cred = credentials.Certificate('usagestats-d296b-93f481d3896b.json')
-initialize_app(cred, {'storageBucket': 'usagestats-d296b.appspot.com'})
 
-# local file path of the file I want to upload
-fileName = "Modified_EDA.csv"
-bucket = storage.bucket()
-blob = bucket.blob(fileName)
-blob.upload_from_filename(fileName)
+            #getting the SCL from the raw signal
+            cutoff_for_scl = 0.1  # Example low-pass filter cutoff frequency for SCL
+            order_for_scl = 4     # Filter order
+            # Apply low-pass filter to the original EDA signal
+            scl_component = butter_lp_filter(segment, cutoff_for_scl, sampling_rate, order_for_scl)
+            #smoothing the SCL signal
+            window_size = sampling_rate * 5  # Example: 5-second window for moving average
+            scl_smoothed = np.convolve(scl_component, np.ones(window_size) / window_size, mode='valid')
+            scl_components.append(scl_component)
 
-#Opt : if you want to make public access from the URL
-blob.make_public()
 
-print("your file url", blob.public_url)
+            #saving the filtered signal, phasic, tonic components in csv files
+            for i, (original, filtered, phasic, tonic) in enumerate(zip(segment, filtered_segments, phasic_components, tonic_components)):
+                
+                segment_df = pd.DataFrame({
+                'Original signal' : segment, 
+                'Filtered EDA': filtered,
+                'Phasic Component': phasic,
+                'Tonic Component': tonic
+                })
+            
+            filename = f"Segment_{i}_EDA.csv"
+            complete_path = os.path.join(path, filename)
+
+            segment_df.to_csv(complete_path, index=False)
+
+            for i, scl_segment in enumerate (scl_components):
+                plt.figure(figsize=(10,4))
+                plt.plot(scl_segment, label='SCL Segment', color='purple')
+                plt.title(f'Segment {i} - Skin Conductance Level (SCL)')
+                plt.xlabel('Samples')
+                plt.ylabel('SCL Amplitude')
+                plt.legend()
+
+                # Save the plot
+                plt.savefig(f"{eda_chars_plots_dir}/Segment_{i}_SCL_plot.png")
+                plt.close()
+
+def find_scr_peaks(phasic_component, height=None, distance=None):
+    peaks, _ = find_peaks(phasic_component, height=height, distance=distance)
+    return peaks
+
+#Saving the segment plots to png files
+for i, (original, filtered, phasic, tonic) in enumerate(zip(seg, filtered_segments, phasic_components, tonic_components)):
+    plt.figure(figsize=(12, 8))
+
+    # Original EDA
+    plt.subplot(4, 1, 1)
+    plt.plot(original, label='Original EDA')
+    plt.title(f'Segment {i} - Original EDA')
+    plt.xlabel('Samples')
+    plt.ylabel('EDA Amplitude')
+
+    # Filtered EDA
+    plt.subplot(4, 1, 2)
+    plt.plot(filtered, label='Filtered EDA', color='blue')
+    plt.title('Filtered EDA')
+    plt.xlabel('Samples')
+    plt.ylabel('EDA Amplitude')
+
+    # Phasic Component
+    plt.subplot(4, 1, 3)
+    plt.plot(phasic, label='Phasic Component', color='red')
+    plt.title('Phasic Component')
+    plt.xlabel('Samples')
+    plt.ylabel('EDA Amplitude')
+
+    # Tonic Component
+    plt.subplot(4, 1, 4)
+    plt.plot(tonic, label='Tonic Component', color='green')
+    plt.title('Tonic Component')
+    plt.xlabel('Samples')
+    plt.ylabel('EDA Amplitude')
+
+    plt.tight_layout()
+
+    # Save the plot to a file
+    plt.savefig(f"{plot_dir}/Segment_{i}_plot.png")
+    plt.close()
