@@ -10,6 +10,7 @@ eda_data = pd.read_csv('EDA.csv')
 eda_signal = eda_data.iloc[:, 0]  # selecting the first column of the csv file
 sampling_rate = 4
 
+#LOW PASS FILTERING - SMOOTHING THE SIGNAL/REMOVAL OF NOISE
 # Butterworth low-pass filtering 
 def butter_lp_filter(data, cutoff, fs, order):
     nyq_f = 0.5 * fs  # Nyquist Frequency
@@ -18,6 +19,14 @@ def butter_lp_filter(data, cutoff, fs, order):
     y = filtfilt(b, a, data)
     return y
 
+# Low-pass filter parameters
+order_lp = 4
+fs = 4  # sample rate 
+cutoff_lp = 1  # desired cutoff frequency of the filter in Hz
+# Applying the low-pass filter
+filtered_signal = butter_lp_filter(eda_signal, cutoff_lp, fs, order_lp)
+
+#HIGH-PASS FILTERING - DECOMPOSING OF THE SIGNAL
 # High-pass filtering to decompose the signal into tonic and phasic components
 def highpass_filter(data, cutoff, fs, order):
     nyq_f = 0.5 * fs  # Nyquist Frequency
@@ -26,52 +35,39 @@ def highpass_filter(data, cutoff, fs, order):
     z = filtfilt(b, a, data)
     return z
 
-# Low-pass filter parameters
-order_lp = 4
-fs = 4  # sample rate 
-cutoff_lp = 1  # desired cutoff frequency of the filter in Hz
-
-# Applying the low-pass filter
-filtered_signal = butter_lp_filter(eda_signal, cutoff_lp, fs, order_lp)
-
 # High-pass filter parameters
 order_hp = 4
 cutoff_hp = 0.05  # Desired cutoff frequency of the high-pass filter, Hz
-
 # Applying the high-pass filter and getting the phasic component
 phasic_component = highpass_filter(filtered_signal, cutoff_hp, fs, order_hp)
-
 # Getting the tonic component of the signal
 tonic_component = filtered_signal - phasic_component
 
+#GETTING THE SCL FROM THE SIGNAL 
 # Apply low-pass filter to the original EDA signal to get the SCL
 cutoff_for_scl = 0.1  # Example low-pass filter cutoff frequency for SCL
 order_for_scl = 4     # Filter order
-
 scl_component = butter_lp_filter(eda_signal, cutoff_for_scl, sampling_rate, order_for_scl)
-
-# Smooth the SCL signal
-window_size = sampling_rate * 5  # Example: 5-second window for moving average
+# Smoothing the SCL signal
+window_size = sampling_rate * 5  #5-second window for moving average
 scl_smoothed = np.convolve(scl_component, np.ones(window_size) / window_size, mode='valid')
 
+#FINDING SCR FEATURES IN THE PHASIC COMPONENT
 # Find SCR features
 def find_scr_features(phasic_component, sampling_rate):
     scr_info = nk.eda_findpeaks(phasic_component, sampling_rate=sampling_rate)
     return scr_info
 
 scr_features = find_scr_features(phasic_component, sampling_rate)
-
-# Manually find SCR onsets
+#Finding SCR onsets
 def find_scr_onsets(phasic_component, scr_features):
     onsets = []
     for peak in scr_features['SCR_Peaks']:
         onset = np.where(phasic_component[:peak] < phasic_component[peak]*0.1)[0][-1]
         onsets.append(onset)
     return onsets
-
 scr_features['SCR_Onsets'] = find_scr_onsets(phasic_component, scr_features)
-
-# Manually find SCR recovery
+# Finding SCR recovery
 def find_scr_recovery(phasic_component, scr_features):
     recovery = []
     half_recovery = []
@@ -94,9 +90,9 @@ def find_scr_recovery(phasic_component, scr_features):
 
 scr_features['SCR_Recovery'], scr_features['SCR_Half_Recovery'] = find_scr_recovery(phasic_component, scr_features)
 
-# Generate timestamps
-start_time = datetime.now()
-time_stamps = [start_time + timedelta(seconds=i) for i in range(len(eda_signal))]
+# Defining the start time and generating timestamps
+start_time = datetime(2024,3,1,11,19,20) #the start time of the eda file I had recorded
+time_stamps = [start_time + timedelta(milliseconds=i*(1000/sampling_rate)) for i in range(len(eda_signal))]
 
 eda_data_with_features = pd.DataFrame({
     'Timestamp': time_stamps,
@@ -126,7 +122,7 @@ plt.xlabel('Samples')
 plt.ylabel('EDA Amplitude')
 plt.legend()
 
-# Phasic Component
+# Phasic Component with SCR features 
 plt.subplot(4, 1, 3)
 plt.plot(phasic_component, label='Phasic Component', color='red')
 plt.scatter(scr_features['SCR_Peaks'], phasic_component[scr_features['SCR_Peaks']], color='blue', label='SCR Peaks')
@@ -149,10 +145,27 @@ plt.legend()
 
 plt.tight_layout()
 
-# Save the plot as PNG
+# Saving the plot as PNG
 plt.savefig('EDA_plot.png', format='png')
 
-# Save the data with features
+# Saving the modified csv file
 eda_data_with_features.to_csv('Modified_EDA.csv', index=False)
 
 plt.show()
+
+#FIREBASE INITIALIZATION 
+from firebase_admin import credentials, initialize_app, storage
+# Init firebase
+cred = credentials.Certificate('usagestats.json')
+initialize_app(cred, {'storageBucket': 'usagestats-d296b.appspot.com'})
+
+# local file path of the file I want to upload
+fileName = "Modified_EDA.csv"
+bucket = storage.bucket()
+blob = bucket.blob(fileName)
+blob.upload_from_filename(fileName)
+
+#Opt : if you want to make public access from the URL
+blob.make_public()
+
+print("your file url", blob.public_url)
