@@ -157,7 +157,7 @@ plt.show()
 from firebase_admin import credentials, initialize_app, storage
 # Init firebase
 cred = credentials.Certificate('usagestats.json')
-initialize_app(cred, {'storageBucket': 'usagestats-d296b.appspot.com'})
+initialize_app(cred, {'storageBucket': '-----------'}) #here you will add your storage bucket name in order to use firebase
 
 # local file path of the file I want to upload
 fileName = "Modified_EDA.csv"
@@ -165,7 +165,7 @@ bucket = storage.bucket()
 blob = bucket.blob(fileName)
 blob.upload_from_filename(fileName)
 
-#Opt : if you want to make public access from the URL
+#Optional : if you want to have public access from the URL
 blob.make_public()
 
 print("your file url", blob.public_url)
